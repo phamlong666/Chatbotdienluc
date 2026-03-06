@@ -24,23 +24,40 @@ import torch
 # 1. CẤU HÌNH TRANG VÀ GIAO DIỆN CHUNG
 st.set_page_config(layout="wide", page_title="AI Đội Định Hóa", page_icon="🤖")
 
-# CSS Tùy chỉnh để giao diện chia 2 bên rõ ràng
+# CSS Tùy chỉnh để giao diện chia 2 bên rõ ràng và đẹp mắt (Cập nhật mới nhất)
 st.markdown("""
     <style>
-    .stChatMessage {
-        border-radius: 15px;
-        margin-bottom: 15px;
-        padding: 10px;
+    /* Tổng thể container chat */
+    [data-testid="stChatMessageContainer"] {
+        padding: 2rem;
     }
-    /* Người dùng (User): Nằm bên phải */
+    
+    /* Bo góc và khoảng cách tin nhắn */
+    .stChatMessage {
+        border-radius: 20px;
+        margin-bottom: 1rem;
+        max-width: 85%;
+    }
+
+    /* TIN NHẮN NGƯỜI DÙNG (USER): Đẩy sang phải, nền xanh */
     [data-testid="stChatMessageUser"] {
         background-color: #e3f2fd !important;
+        margin-left: auto !important;
+        border-bottom-right-radius: 2px;
         flex-direction: row-reverse;
-        text-align: right;
     }
-    /* Trợ lý (Bot): Nằm bên trái */
+    
+    /* TIN NHẮN BOT (ASSISTANT): Nằm bên trái, nền xám */
     [data-testid="stChatMessageAssistant"] {
         background-color: #f5f5f5 !important;
+        margin-right: auto !important;
+        border-bottom-left-radius: 2px;
+    }
+
+    /* Chỉnh sửa avatar cho khớp vị trí */
+    [data-testid="stChatMessageUser"] [data-testid="stChatMessageAvatar"] {
+        margin-left: 10px;
+        margin-right: 0;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -49,7 +66,7 @@ st.markdown("""
 plt.rcParams['font.family'] = 'DejaVu Sans'
 plt.rcParams['font.size'] = 12
 
-# 2. GIẢI MÃ KHÓA BẢO MẬT (LOGIC CŨ CỦA ANH)
+# 2. GIẢI MÃ KHÓA BẢO MẬT
 @st.cache_resource
 def get_decrypted_all_keys():
     config = {"gemini": None, "gdrive": None}
@@ -59,7 +76,7 @@ def get_decrypted_all_keys():
             master_key = sec.get("encryption_key_for_decryption").encode()
             cipher = Fernet(master_key)
             
-            # Giải mã API Key Gemini (AI Studio)
+            # Giải mã API Key Gemini
             enc_gemini = sec.get("encrypted_gemini_api_key")
             if enc_gemini:
                 config["gemini"] = cipher.decrypt(enc_gemini.encode()).decode()
@@ -124,7 +141,7 @@ def load_all_sheets():
         return {ws.title: pd.DataFrame(ws.get_all_records()) for ws in sh.worksheets()}
     except: return {}
 
-def semantic_search(query, df, q_col, a_col, threshold=0.5):
+def semantic_search(query, df, q_col, a_col, threshold=0.35): # Giảm threshold để dễ tìm thấy hơn
     if df.empty or q_col not in df.columns: return None, 0
     questions = df[q_col].astype(str).tolist()
     doc_embs = ai_tools["semantic_model"].encode(questions, convert_to_tensor=True)
@@ -154,7 +171,7 @@ with st.sidebar:
         st.rerun()
     
     if st.button("💾 Lưu hội thoại", use_container_width=True):
-        st.success("Đã lưu hội thoại!")
+        st.success("Đã lưu hội thoại vào bộ nhớ hệ thống!")
 
     st.divider()
     # Giọng nói
@@ -179,7 +196,7 @@ for msg in st.session_state.messages:
         if "df" in msg: st.dataframe(msg["df"])
 
 # NHẬN ĐẦU VÀO
-u_input = st.session_state.voice_text if st.session_state.voice_text else st.chat_input("Hỏi về KPI, nhân sự, TBA hoặc kiến thức chung...")
+u_input = st.session_state.voice_text if st.session_state.voice_text else st.chat_input("Hỏi em về KPI, CBCNV hoặc kiến thức ngành điện...")
 st.session_state.voice_text = None
 
 if u_input:
@@ -190,32 +207,44 @@ if u_input:
 
     # 2. Xử lý Trợ lý trả lời (Bên trái)
     with st.chat_message("assistant"):
-        with st.spinner("Đang truy xuất..."):
+        with st.spinner("Đang tìm kiếm thông tin..."):
             all_data = load_all_sheets()
             handled = False
             norm_u = normalize_text(u_input)
 
-            # --- LUỒNG 1: TRUY VẤN GOOGLE SHEETS ---
-            # (KPI, CBCNV, Lãnh đạo xã, TBA...)
-            if any(k in norm_u for k in ["kpi", "chỉ số"]):
+            # --- LUỒNG 1: TRUY VẤN GOOGLE SHEETS (DỮ LIỆU CỨNG) ---
+            
+            # Kiểm tra KPI
+            if any(k in norm_u for k in ["kpi", "chỉ số", "thực hiện"]):
                 df_kpi = all_data.get("KPI", pd.DataFrame())
                 if not df_kpi.empty:
                     st.dataframe(df_kpi)
-                    res = "Dữ liệu KPI anh cần ạ."
+                    res = "Em tìm thấy dữ liệu KPI trong hệ thống đây ạ."
                     st.markdown(res)
                     st.session_state.messages.append({"role": "assistant", "content": res, "df": df_kpi})
                     handled = True
 
-            elif any(k in norm_u for k in ["cbcnv", "nhân viên", "nhân sự"]):
+            # Kiểm tra CBCNV
+            elif any(k in norm_u for k in ["cbcnv", "nhân viên", "nhân sự", "danh sách"]):
                 df_cb = all_data.get("CBCNV", pd.DataFrame())
                 if not df_cb.empty:
                     st.dataframe(df_cb)
-                    res = f"Hiện có {len(df_cb)} CBCNV."
+                    res = f"Dạ, đội mình hiện có {len(df_cb)} cán bộ công nhân viên."
                     st.markdown(res)
                     st.session_state.messages.append({"role": "assistant", "content": res, "df": df_cb})
                     handled = True
 
-            # Tìm trong Hỏi-Trả lời tĩnh
+            # Kiểm tra Trạm biến áp (TBA)
+            elif any(k in norm_u for k in ["tba", "trạm", "biến áp"]):
+                df_tba = all_data.get("TBA", pd.DataFrame())
+                if not df_tba.empty:
+                    st.dataframe(df_tba)
+                    res = "Thông tin các trạm biến áp chi tiết đây ạ."
+                    st.markdown(res)
+                    st.session_state.messages.append({"role": "assistant", "content": res, "df": df_tba})
+                    handled = True
+
+            # Tìm trong Hỏi-Trả lời tĩnh (Semantic Search)
             if not handled:
                 ans, sc = semantic_search(u_input, all_data.get("Hỏi-Trả lời", pd.DataFrame()), "Câu hỏi", "Câu trả lời")
                 if ans:
@@ -224,20 +253,24 @@ if u_input:
                     handled = True
 
             # --- LUỒNG 2: GOOGLE GEMINI (AI STUDIO) ---
-            # Nếu không tìm thấy trong sheet, sẽ hỏi kiến thức bên ngoài
+            # Nếu không tìm thấy trong sheet, Gemini sẽ trả lời kiến thức ngoài
             if not handled and secrets_data["gemini"]:
                 try:
                     genai.configure(api_key=secrets_data["gemini"])
                     model = genai.GenerativeModel('gemini-1.5-flash')
                     
-                    context = f"Bạn là trợ lý Đội Định Hóa. Hãy trả lời anh Long: {u_input}"
-                    response = model.generate_content(context)
+                    # Cung cấp bối cảnh cho Gemini
+                    prompt_with_context = f"Bạn là trợ lý thông minh của Đội Định Hóa. Hãy trả lời câu hỏi của anh Long một cách chuyên nghiệp và thân thiện: {u_input}"
+                    response = model.generate_content(prompt_with_context)
                     
                     st.markdown(response.text)
                     st.session_state.messages.append({"role": "assistant", "content": response.text})
                     handled = True
-                except:
-                    st.error("AI hiện không phản hồi.")
+                except Exception as e:
+                    st.warning("Hiện tại hệ thống AI đang bận xử lý, anh đợi một lát rồi thử lại nhé!")
 
+            # Nếu vẫn không xử lý được
             if not handled:
-                st.info("Em chưa có thông tin này trong dữ liệu nội bộ.")
+                fallback_msg = "Em chưa tìm thấy dữ liệu này trong Sheets và AI cũng chưa có câu trả lời phù hợp. Anh có thể hỏi cụ thể hơn không?"
+                st.info(fallback_msg)
+                st.session_state.messages.append({"role": "assistant", "content": fallback_msg})
