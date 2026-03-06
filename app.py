@@ -77,7 +77,7 @@ def load_sheet_context():
     except Exception as e:
         return f"⚠️ Lỗi đọc Sheet: {str(e)}"
 
-# 5. XỬ LÝ AI TRẢ LỜI (Cập nhật Model và Google Search)
+# 5. XỬ LÝ AI TRẢ LỜI
 def ask_gemini(prompt, files, sheet_data):
     api_key = config["gemini_api_key"]
     if not api_key: return "⚠️ Thiếu API Key."
@@ -85,15 +85,20 @@ def ask_gemini(prompt, files, sheet_data):
     try:
         genai.configure(api_key=api_key)
         
-        # Sử dụng model mới nhất và tích hợp Google Search
+        # Cấu hình công cụ tìm kiếm Google Search theo định dạng chuẩn mới
+        tools = [
+            {"google_search_retrieval": {}} 
+        ]
+        
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash-latest', # Thay đổi tên model để tránh lỗi 404
-            tools=[{"google_search": {}}] # Thêm công cụ tìm kiếm Google
+            model_name='gemini-1.5-flash-latest',
+            tools=tools
         )
         
         payload = [
             f"Bạn là trợ lý AI của Đội Định Hóa. Hãy trả lời câu hỏi của anh Long.\n\n"
-            f"DỮ LIỆU SHEET:\n{sheet_data}\n\n"
+            f"DỮ LIỆU TRONG GOOGLE SHEET CỦA ANH LONG:\n{sheet_data}\n\n"
+            f"LƯU Ý: Nếu câu hỏi về thời tiết hoặc tin tức mới nhất, hãy dùng công cụ tìm kiếm Google.\n\n"
             f"CÂU HỎI: {prompt}"
         ]
         
@@ -107,7 +112,13 @@ def ask_gemini(prompt, files, sheet_data):
         response = model.generate_content(payload)
         return response.text
     except Exception as e:
-        return f"❌ Lỗi xử lý AI: {str(e)}"
+        # Nếu lỗi liên quan đến Search, thử gọi lại model không có tools để vẫn trả lời được từ Sheet
+        try:
+            model_basic = genai.GenerativeModel(model_name='gemini-1.5-flash-latest')
+            response = model_basic.generate_content(payload)
+            return response.text
+        except:
+            return f"❌ Lỗi xử lý AI: {str(e)}"
 
 # 6. GIAO DIỆN CHÍNH
 with st.sidebar:
