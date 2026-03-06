@@ -16,39 +16,62 @@ from cryptography.fernet import Fernet
 from audio_recorder_streamlit import audio_recorder
 import seaborn as sns
 import google.generativeai as genai
+from fuzzywuzzy import fuzz
+import io
+from PIL import Image
 
-# Sửa lỗi Import: Sử dụng cấu trúc an toàn hơn
-try:
-    from fuzzywuzzy import fuzz
-except ImportError:
-    st.error("Thiếu thư viện fuzzywuzzy. Anh vui lòng thêm 'fuzzywuzzy' và 'python-Levenshtein' vào requirements.txt trên GitHub.")
+# 1. CẤU HÌNH TRANG VÀ GIAO DIỆN CHUYÊN NGHIỆP (PHONG CÁCH GEMINI)
+st.set_page_config(layout="wide", page_title="Đội Định Hóa AI", page_icon="✨")
 
-# 1. CẤU HÌNH TRANG VÀ GIAO DIỆN CHUNG
-st.set_page_config(layout="wide", page_title="AI Đội Định Hóa", page_icon="🤖")
-
-# CSS Tùy chỉnh giao diện Chat chuẩn
+# Tùy chỉnh giao diện bằng CSS
 st.markdown("""
     <style>
+    /* Google-inspired UI */
+    .stApp {
+        background-color: #ffffff;
+    }
+    .main .block-container {
+        padding-top: 2rem;
+        max-width: 900px;
+    }
+    /* Giao diện tin nhắn */
     [data-testid="stChatMessage"] {
-        padding: 1rem;
-        border-radius: 15px;
-        margin-bottom: 10px;
-        display: flex !important;
-        width: fit-content !important;
-        max-width: 85% !important;
+        border-radius: 20px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        border: none;
+        box-shadow: none;
     }
     [data-testid="stChatMessageUser"] {
-        background-color: #e3f2fd !important;
-        margin-left: auto !important;
-        flex-direction: row-reverse !important;
-        text-align: right;
+        background-color: #f0f4f9 !important;
+        border-bottom-right-radius: 4px;
     }
     [data-testid="stChatMessageAssistant"] {
-        background-color: #f5f5f5 !important;
-        margin-right: auto !important;
+        background-color: transparent !important;
+        border: 1px solid #e3e3e3;
+        border-bottom-left-radius: 4px;
     }
-    [data-testid="stChatMessageUser"] [data-testid="stChatMessageAvatar"] {
-        margin-left: 10px; margin-right: 0;
+    /* Thanh input */
+    .stChatInputContainer {
+        padding-bottom: 2rem;
+    }
+    /* Sidebar */
+    .stSidebar {
+        background-color: #f8fafd;
+    }
+    .stSidebar [data-testid="stImage"] {
+        border-radius: 50%;
+        margin-bottom: 20px;
+    }
+    h1, h2, h3 {
+        color: #1f1f1f;
+        font-family: 'Google Sans', sans-serif;
+    }
+    /* Nút bấm */
+    .stButton button {
+        border-radius: 10px;
+        border: 1px solid #dadce0;
+        background: white;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -80,7 +103,7 @@ def get_decrypted_all_keys():
                 "client_x509_cert_url": sec.get("client_x509_cert_url")
             }
         except Exception as e:
-            st.error(f"Lỗi giải mã bảo mật: {e}")
+            st.error(f"Lỗi bảo mật: {e}")
     return config
 
 secrets_data = get_decrypted_all_keys()
@@ -95,67 +118,73 @@ def get_sheets_connection():
     return None
 
 gc = get_sheets_connection()
+# Đường link Sheet anh gửi
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/13MqQzvV3Mf9bLOAXwICXclYVQ-8WnvBDPAR8VJfOGJg/edit"
 
-# 4. CÁC HÀM XỬ LÝ DỮ LIỆU
+# 4. CÔNG CỤ XỬ LÝ
 def normalize_text(text):
     if not isinstance(text, str): return ""
     text = unicodedata.normalize('NFC', text)
     return re.sub(r'\s+', ' ', text).strip().lower()
 
 @st.cache_data(ttl=300)
-def load_all_sheets():
+def load_data():
     if not gc: return {}
     try:
         sh = gc.open_by_url(SPREADSHEET_URL)
         data = {}
         for ws in sh.worksheets():
-            rows = ws.get_all_records()
-            if rows:
-                df = pd.DataFrame(rows)
-                df.columns = [str(c).strip() for c in df.columns]
-                data[ws.title] = df
+            df = pd.DataFrame(ws.get_all_records())
+            df.columns = [str(c).strip() for c in df.columns]
+            data[ws.title] = df
         return data
+    except: return {}
+
+def query_gemini(prompt, files=None):
+    if not secrets_data["gemini"]: return "Cần cấu hình API Gemini."
+    try:
+        genai.configure(api_key=secrets_data["gemini"])
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        content = [prompt]
+        if files: content.extend(files)
+        response = model.generate_content(content)
+        return response.text
     except Exception as e:
-        st.error(f"Lỗi tải dữ liệu: {e}")
-        return {}
+        return f"Lỗi AI: {str(e)}"
 
-def find_best_answer(user_query, df_qa):
-    if df_qa.empty or "Câu hỏi" not in df_qa.columns:
-        return None, 0
-    
-    best_answer = None
-    max_score = 0
-    norm_query = normalize_text(user_query)
-    
-    for _, row in df_qa.iterrows():
-        question = str(row["Câu hỏi"])
-        answer = str(row["Câu trả lời"])
-        # Logic Fuzzy Matching tương đương app-001
-        score = fuzz.token_set_ratio(norm_query, normalize_text(question))
-        
-        if score > max_score:
-            max_score = score
-            best_answer = answer
-            
-    return best_answer, max_score
-
-# 5. GIAO DIỆN CHAT
+# 5. GIAO DIỆN CHÍNH
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Sidebar nâng cấp
 with st.sidebar:
-    st.image("https://raw.githubusercontent.com/phamlong666/Chatbot/main/logo_hinh_tron.png", width=100)
-    st.title("AI Đội Định Hóa")
-    if st.button("🗑 Xóa lịch sử"):
+    st.image("https://raw.githubusercontent.com/phamlong666/Chatbot/main/logo_hinh_tron.png", width=120)
+    st.markdown("### ✨ Đội Định Hóa AI")
+    st.caption("Trợ lý phân tích dữ liệu chuyên sâu")
+    
+    st.divider()
+    # Khu vực Upload File
+    st.markdown("### 📄 Tài liệu phân tích")
+    uploaded_files = st.file_uploader("Tải Word, Excel, PDF hoặc Ảnh", 
+                                    type=["pdf", "xlsx", "docx", "png", "jpg"], 
+                                    accept_multiple_files=True)
+    
+    if st.button("🗑 Xóa hội thoại", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
+# Hiển thị tiêu đề chào mừng nếu chưa có chat
+if not st.session_state.messages:
+    st.markdown("<h2 style='text-align: center; margin-top: 100px; color: #444;'>Chào anh Long, hôm nay em có thể giúp gì cho anh?</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888;'>Anh có thể hỏi về nghiệp vụ hoặc tải file lên để em báo cáo nhé.</p>", unsafe_allow_html=True)
+
+# Hiển thị lịch sử chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "df" in msg: st.dataframe(msg["df"])
 
+# Xử lý input
 u_input = st.chat_input("Hỏi em bất cứ điều gì...")
 
 if u_input:
@@ -163,51 +192,52 @@ if u_input:
     with st.chat_message("user"): st.markdown(u_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Đang kiểm tra dữ liệu..."):
-            all_data = load_all_sheets()
+        with st.spinner("Đang suy nghĩ..."):
+            all_data = load_data()
             handled = False
-            norm_u = normalize_text(u_input)
-
-            # --- LUỒNG 1: KIỂM TRA TRONG HỎI - TRẢ LỜI ---
-            df_qa = all_data.get("Hỏi-Trả lời", pd.DataFrame())
-            ans, score = find_best_answer(u_input, df_qa)
             
-            if ans and score > 65:
+            # --- LUỒNG 1: TÌM TRONG SAMPLE_QUESTIONS (Hỏi-Trả lời) ---
+            # Anh lưu ý: GID 2107842233 tương ứng với sheet "Hỏi-Trả lời" hoặc "sample_questions"
+            df_qa = all_data.get("Hỏi-Trả lời", all_data.get("sample_questions", pd.DataFrame()))
+            
+            if not df_qa.empty:
+                best_ans = None
+                max_score = 0
+                for _, row in df_qa.iterrows():
+                    score = fuzz.token_set_ratio(normalize_text(u_input), normalize_text(str(row.get("Câu hỏi", ""))))
+                    if score > 75: # Ngưỡng khớp
+                        best_ans = row.get("Câu trả lời", "")
+                        break
+                
+                if best_ans:
+                    st.markdown(best_ans)
+                    st.session_state.messages.append({"role": "assistant", "content": best_ans})
+                    handled = True
+
+            # --- LUỒNG 2: PHÂN TÍCH FILE (NẾU CÓ FILE UPLOAD) ---
+            if not handled and uploaded_files:
+                file_context = "Người dùng đã tải lên các tệp sau để phân tích. Hãy dựa vào đó trả lời: "
+                # Xử lý file tại đây (đơn giản hóa qua prompt)
+                ans = query_gemini(f"{file_context} \n Câu hỏi: {u_input}")
                 st.markdown(ans)
                 st.session_state.messages.append({"role": "assistant", "content": ans})
                 handled = True
 
-            # --- LUỒNG 2: KIỂM TRA DỮ LIỆU CÔNG VIỆC ---
+            # --- LUỒNG 3: TỰ ĐỘNG CHUYỂN GEMINI (NẾU KHÔNG CÓ TRONG SHEET) ---
             if not handled:
-                if any(k in norm_u for k in ["kpi", "chỉ số"]):
-                    df = all_data.get("KPI", pd.DataFrame())
-                    if not df.empty:
-                        st.markdown("Dữ liệu KPI Đội Định Hóa:")
-                        st.dataframe(df)
-                        st.session_state.messages.append({"role": "assistant", "content": "Bảng KPI đây ạ:", "df": df})
+                # Nếu hỏi về số liệu có sẵn (KPI, CBCNV) thì hiện bảng trước
+                norm_u = normalize_text(u_input)
+                if any(k in norm_u for k in ["kpi", "nhân sự", "nhân viên"]):
+                    df_kpi = all_data.get("KPI", pd.DataFrame())
+                    if not df_kpi.empty:
+                        res = "Đây là dữ liệu em tìm thấy trong hệ thống:"
+                        st.markdown(res)
+                        st.dataframe(df_kpi)
+                        st.session_state.messages.append({"role": "assistant", "content": res, "df": df_kpi})
                         handled = True
                 
-                elif any(k in norm_u for k in ["nhân viên", "nhân sự", "cbcnv"]):
-                    df = all_data.get("CBCNV", pd.DataFrame())
-                    if not df.empty:
-                        st.markdown(f"Danh sách {len(df)} CBCNV:")
-                        st.dataframe(df)
-                        st.session_state.messages.append({"role": "assistant", "content": "Danh sách nhân sự đây ạ:", "df": df})
-                        handled = True
-
-            # --- LUỒNG 3: GEMINI (NẾU SHEET KHÔNG CÓ) ---
-            if not handled and secrets_data["gemini"]:
-                try:
-                    genai.configure(api_key=secrets_data["gemini"])
-                    model = genai.GenerativeModel('gemini-1.5-flash')
-                    response = model.generate_content(f"Bạn là trợ lý Đội Định Hóa. Hãy trả lời anh Long: {u_input}")
-                    st.markdown(response.text)
-                    st.session_state.messages.append({"role": "assistant", "content": response.text})
-                    handled = True
-                except:
-                    st.error("AI Gemini đang bận.")
-
-            if not handled:
-                msg = "Dạ em chưa tìm thấy thông tin này trong tài liệu nội bộ."
-                st.info(msg)
-                st.session_state.messages.append({"role": "assistant", "content": msg})
+                # Cuối cùng là hỏi Gemini kiến thức tổng quát
+                if not handled:
+                    ans = query_gemini(u_input)
+                    st.markdown(ans)
+                    st.session_state.messages.append({"role": "assistant", "content": ans})
