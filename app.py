@@ -83,23 +83,21 @@ def ask_gemini(prompt, files, sheet_data):
     if not api_key: return "⚠️ Thiếu API Key."
     
     try:
+        # Cấu hình API key
         genai.configure(api_key=api_key)
         
-        # Cấu hình công cụ tìm kiếm Google Search theo định dạng chuẩn mới
-        tools = [
-            {"google_search_retrieval": {}} 
-        ]
-        
+        # Cấu hình công cụ tìm kiếm Google Search theo định dạng ổn định nhất
+        # Thử nghiệm với tên mô hình cơ bản và tool search tiêu chuẩn
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash-latest',
-            tools=tools
+            model_name='gemini-1.5-flash',
+            tools=[{"google_search": {}}]
         )
         
         payload = [
-            f"Bạn là trợ lý AI của Đội Định Hóa. Hãy trả lời câu hỏi của anh Long.\n\n"
+            f"Bạn là trợ lý AI chuyên nghiệp của Đội Định Hóa. Hãy trả lời câu hỏi của anh Long.\n\n"
             f"DỮ LIỆU TRONG GOOGLE SHEET CỦA ANH LONG:\n{sheet_data}\n\n"
-            f"LƯU Ý: Nếu câu hỏi về thời tiết hoặc tin tức mới nhất, hãy dùng công cụ tìm kiếm Google.\n\n"
-            f"CÂU HỎI: {prompt}"
+            f"LƯU Ý quan trọng: Nếu câu hỏi về thời tiết, tin tức hoặc thông tin cập nhật sau năm 2023, hãy sử dụng Google Search để có dữ liệu chính xác nhất.\n\n"
+            f"CÂU HỎI HIỆN TẠI: {prompt}"
         ]
         
         for f in files:
@@ -107,18 +105,19 @@ def ask_gemini(prompt, files, sheet_data):
                 img = Image.open(io.BytesIO(f['content']))
                 payload.append(img)
             else:
-                payload.append(f"\n[Dữ liệu tệp {f['name']}]")
+                payload.append(f"\n[Dữ liệu tệp đính kèm {f['name']}]")
         
         response = model.generate_content(payload)
         return response.text
     except Exception as e:
-        # Nếu lỗi liên quan đến Search, thử gọi lại model không có tools để vẫn trả lời được từ Sheet
+        # Nếu lỗi 404 hoặc lỗi Search, fallback về mô hình cơ bản không dùng tools
         try:
-            model_basic = genai.GenerativeModel(model_name='gemini-1.5-flash-latest')
+            model_basic = genai.GenerativeModel(model_name='gemini-1.5-flash')
+            # Lọc bỏ tool search nếu lỗi
             response = model_basic.generate_content(payload)
             return response.text
-        except:
-            return f"❌ Lỗi xử lý AI: {str(e)}"
+        except Exception as e2:
+            return f"❌ Lỗi hệ thống AI: {str(e)}"
 
 # 6. GIAO DIỆN CHÍNH
 with st.sidebar:
@@ -149,7 +148,7 @@ if user_query:
     with st.chat_message("user"): st.markdown(user_query)
 
     with st.chat_message("assistant"):
-        with st.spinner("Đang truy xuất..."):
+        with st.spinner("Đang truy xuất dữ liệu..."):
             ctx_sheet = load_sheet_context()
             res = ask_gemini(user_query, st.session_state.persistent_files, ctx_sheet)
             st.markdown(res)
