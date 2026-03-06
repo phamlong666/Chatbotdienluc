@@ -13,3 +13,5 @@ numpy
 sentence-transformers
 torch
 google-generativeai
+fuzzywuzzy
+python-Levenshtein

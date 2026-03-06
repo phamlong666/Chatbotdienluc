@@ -16,7 +16,12 @@ from cryptography.fernet import Fernet
 from audio_recorder_streamlit import audio_recorder
 import seaborn as sns
 import google.generativeai as genai
-from fuzzywuzzy import fuzz # Quay lại dùng fuzzy để đảm bảo độ ổn định cao nhất như app-001
+
+# Sửa lỗi Import: Sử dụng cấu trúc an toàn hơn
+try:
+    from fuzzywuzzy import fuzz
+except ImportError:
+    st.error("Thiếu thư viện fuzzywuzzy. Anh vui lòng thêm 'fuzzywuzzy' và 'python-Levenshtein' vào requirements.txt trên GitHub.")
 
 # 1. CẤU HÌNH TRANG VÀ GIAO DIỆN CHUNG
 st.set_page_config(layout="wide", page_title="AI Đội Định Hóa", page_icon="🤖")
@@ -92,7 +97,7 @@ def get_sheets_connection():
 gc = get_sheets_connection()
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/13MqQzvV3Mf9bLOAXwICXclYVQ-8WnvBDPAR8VJfOGJg/edit"
 
-# 4. CÁC HÀM XỬ LÝ DỮ LIỆU CHÍNH XÁC (TỪ APP-001)
+# 4. CÁC HÀM XỬ LÝ DỮ LIỆU
 def normalize_text(text):
     if not isinstance(text, str): return ""
     text = unicodedata.normalize('NFC', text)
@@ -108,7 +113,7 @@ def load_all_sheets():
             rows = ws.get_all_records()
             if rows:
                 df = pd.DataFrame(rows)
-                df.columns = [str(c).strip() for c in df.columns] # Xóa khoảng trắng tên cột
+                df.columns = [str(c).strip() for c in df.columns]
                 data[ws.title] = df
         return data
     except Exception as e:
@@ -116,7 +121,6 @@ def load_all_sheets():
         return {}
 
 def find_best_answer(user_query, df_qa):
-    """Hàm tìm câu trả lời tốt nhất dùng logic Fuzzy của app-001"""
     if df_qa.empty or "Câu hỏi" not in df_qa.columns:
         return None, 0
     
@@ -127,6 +131,7 @@ def find_best_answer(user_query, df_qa):
     for _, row in df_qa.iterrows():
         question = str(row["Câu hỏi"])
         answer = str(row["Câu trả lời"])
+        # Logic Fuzzy Matching tương đương app-001
         score = fuzz.token_set_ratio(norm_query, normalize_text(question))
         
         if score > max_score:
@@ -146,7 +151,6 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# Hiển thị lịch sử
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -164,18 +168,17 @@ if u_input:
             handled = False
             norm_u = normalize_text(u_input)
 
-            # --- LUỒNG 1: KIỂM TRA TRONG HỎI - TRẢ LỜI (LUỒNG QUAN TRỌNG NHẤT) ---
+            # --- LUỒNG 1: KIỂM TRA TRONG HỎI - TRẢ LỜI ---
             df_qa = all_data.get("Hỏi-Trả lời", pd.DataFrame())
             ans, score = find_best_answer(u_input, df_qa)
             
-            if ans and score > 65: # Ngưỡng an toàn để trả lời đúng ý
+            if ans and score > 65:
                 st.markdown(ans)
                 st.session_state.messages.append({"role": "assistant", "content": ans})
                 handled = True
 
-            # --- LUỒNG 2: KIỂM TRA DỮ LIỆU CÔNG VIỆC (KPI, CBCNV...) ---
+            # --- LUỒNG 2: KIỂM TRA DỮ LIỆU CÔNG VIỆC ---
             if not handled:
-                # Kiểm tra KPI
                 if any(k in norm_u for k in ["kpi", "chỉ số"]):
                     df = all_data.get("KPI", pd.DataFrame())
                     if not df.empty:
@@ -184,7 +187,6 @@ if u_input:
                         st.session_state.messages.append({"role": "assistant", "content": "Bảng KPI đây ạ:", "df": df})
                         handled = True
                 
-                # Kiểm tra CBCNV
                 elif any(k in norm_u for k in ["nhân viên", "nhân sự", "cbcnv"]):
                     df = all_data.get("CBCNV", pd.DataFrame())
                     if not df.empty:
@@ -203,7 +205,7 @@ if u_input:
                     st.session_state.messages.append({"role": "assistant", "content": response.text})
                     handled = True
                 except:
-                    st.error("AI Gemini đang bận, anh thử lại sau nhé.")
+                    st.error("AI Gemini đang bận.")
 
             if not handled:
                 msg = "Dạ em chưa tìm thấy thông tin này trong tài liệu nội bộ."
