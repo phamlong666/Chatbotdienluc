@@ -24,10 +24,9 @@ import torch
 # 1. CẤU HÌNH TRANG VÀ GIAO DIỆN CHUNG
 st.set_page_config(layout="wide", page_title="AI Đội Định Hóa", page_icon="🤖")
 
-# CSS Tùy chỉnh để giao diện chia 2 bên rõ ràng (Cập nhật chuẩn Streamlit mới)
+# CSS Tùy chỉnh giao diện Chat chuẩn
 st.markdown("""
     <style>
-    /* Cấu trúc chung của tin nhắn */
     [data-testid="stChatMessage"] {
         padding: 1rem;
         border-radius: 15px;
@@ -36,35 +35,23 @@ st.markdown("""
         width: fit-content !important;
         max-width: 85% !important;
     }
-
-    /* TIN NHẮN NGƯỜI DÙNG: Đẩy sang phải, màu xanh nhẹ */
     [data-testid="stChatMessageUser"] {
         background-color: #e3f2fd !important;
         margin-left: auto !important;
         flex-direction: row-reverse !important;
         text-align: right;
     }
-
-    /* TIN NHẮN TRỢ LÝ: Nằm bên trái, màu xám nhẹ */
     [data-testid="stChatMessageAssistant"] {
         background-color: #f5f5f5 !important;
         margin-right: auto !important;
     }
-
-    /* Chỉnh sửa avatar để không bị ngược khi dùng row-reverse */
     [data-testid="stChatMessageUser"] [data-testid="stChatMessageAvatar"] {
-        margin-left: 10px;
-        margin-right: 0;
-    }
-    
-    /* Input chat */
-    .stChatInputContainer {
-        padding-bottom: 20px;
+        margin-left: 10px; margin-right: 0;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# Cấu hình tiếng Việt cho biểu đồ
+# Cấu hình Matplotlib hiển thị tiếng Việt
 plt.rcParams['font.family'] = 'DejaVu Sans'
 plt.rcParams['font.size'] = 12
 
@@ -77,16 +64,11 @@ def get_decrypted_all_keys():
             sec = st.secrets["gdrive_service_account"]
             master_key = sec.get("encryption_key_for_decryption").encode()
             cipher = Fernet(master_key)
-            
-            # Giải mã API Key Gemini
             enc_gemini = sec.get("encrypted_gemini_api_key")
             if enc_gemini:
                 config["gemini"] = cipher.decrypt(enc_gemini.encode()).decode()
-            
-            # Giải mã Private Key của Google Drive
             enc_g_private = sec.get("encrypted_private_key").encode()
             dec_g_private = cipher.decrypt(enc_g_private).decode()
-            
             config["gdrive"] = {
                 "type": sec.get("type", "service_account"),
                 "project_id": sec.get("project_id"),
@@ -108,14 +90,12 @@ secrets_data = get_decrypted_all_keys()
 # 3. KHỞI TẠO CÔNG CỤ AI
 @st.cache_resource
 def init_ai_tools():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     return {
-        "semantic_model": SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2', device=device),
-        "ocr_reader": easyocr.Reader(['vi', 'en'], gpu=torch.cuda.is_available())
+        "semantic_model": SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2'),
+        "ocr_reader": easyocr.Reader(['vi', 'en'])
     }
 
-with st.spinner("🤖 Đang kết nối trí tuệ nhân tạo..."):
-    ai_tools = init_ai_tools()
+ai_tools = init_ai_tools()
 
 # 4. KẾT NỐI GOOGLE SHEETS
 def get_sheets_connection():
@@ -129,7 +109,7 @@ def get_sheets_connection():
 gc = get_sheets_connection()
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/13MqQzvV3Mf9bLOAXwICXclYVQ-8WnvBDPAR8VJfOGJg/edit"
 
-# 5. CÁC HÀM TRỢ GIÚP
+# 5. CÁC HÀM XỬ LÝ DỮ LIỆU LOGIC CŨ
 def normalize_text(text):
     if not isinstance(text, str): return ""
     text = unicodedata.normalize('NFC', text)
@@ -140,138 +120,140 @@ def load_all_sheets():
     if not gc: return {}
     try:
         sh = gc.open_by_url(SPREADSHEET_URL)
-        data = {}
-        for ws in sh.worksheets():
-            df = pd.DataFrame(ws.get_all_records())
-            if not df.empty:
-                data[ws.title] = df
-        return data
-    except Exception as e:
-        st.error(f"Lỗi tải dữ liệu từ Sheets: {e}")
-        return {}
+        return {ws.title: pd.DataFrame(ws.get_all_records()) for ws in sh.worksheets()}
+    except: return {}
 
-def semantic_search(query, df, q_col, a_col, threshold=0.3): 
-    if df is None or df.empty or q_col not in df.columns: return None, 0
-    questions = df[q_col].astype(str).tolist()
-    doc_embs = ai_tools["semantic_model"].encode(questions, convert_to_tensor=True)
-    query_emb = ai_tools["semantic_model"].encode(query, convert_to_tensor=True)
-    cos_scores = util.cos_sim(query_emb, doc_embs)[0]
-    best_idx = torch.argmax(cos_scores).item()
-    score = float(cos_scores[best_idx])
-    if score > threshold:
-        return df.iloc[best_idx][a_col], score * 100
-    return None, 0
+def extract_year_month(text):
+    months = re.findall(r'tháng\s+(\d+)', text)
+    years = re.findall(r'năm\s+(\d{4})', text)
+    m = int(months[0]) if months else None
+    y = int(years[0]) if years else None
+    return m, y
 
-# 6. QUẢN LÝ HỘI THOẠI
+# 6. GIAO DIỆN CHAT
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "voice_text" not in st.session_state:
-    st.session_state.voice_text = None
 
 # SIDEBAR
 with st.sidebar:
-    st.image("https://raw.githubusercontent.com/phamlong666/Chatbot/main/logo_hinh_tron.png", width=120)
-    st.title("Trợ lý Đội Định Hóa")
-    st.divider()
-    
-    if st.button("🗑 Xóa lịch sử hội thoại", use_container_width=True):
+    st.image("https://raw.githubusercontent.com/phamlong666/Chatbot/main/logo_hinh_tron.png", width=100)
+    st.title("AI Đội Định Hóa")
+    if st.button("🗑 Xóa lịch sử"):
         st.session_state.messages = []
         st.rerun()
-    
-    st.divider()
-    audio_val = audio_recorder(text="Bấm để nói", icon_size="2x")
-    if audio_val:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(audio_val)
-            tmp_path = tmp.name
-        r = sr.Recognizer()
-        with sr.AudioFile(tmp_path) as source:
-            try:
-                audio = r.record(source)
-                st.session_state.voice_text = r.recognize_google(audio, language="vi-VN")
-            except: st.error("Không nghe rõ...")
-        os.remove(tmp_path)
 
 # HIỂN THỊ CHAT
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "df" in msg: st.dataframe(msg["df"])
+        if "fig" in msg: st.pyplot(msg["fig"])
 
-# NHẬN ĐẦU VÀO
-u_input = st.session_state.voice_text if st.session_state.voice_text else st.chat_input("Hỏi em về KPI, CBCNV hoặc kiến thức ngành điện...")
-st.session_state.voice_text = None
+u_input = st.chat_input("Hỏi về KPI, CBCNV, Lãnh đạo xã hoặc Sự cố...")
 
 if u_input:
-    # 1. Lưu tin nhắn người dùng
     st.session_state.messages.append({"role": "user", "content": u_input})
-    with st.chat_message("user"):
-        st.markdown(u_input)
+    with st.chat_message("user"): st.markdown(u_input)
 
-    # 2. Phản hồi của Trợ lý
     with st.chat_message("assistant"):
-        with st.spinner("Đang xử lý dữ liệu..."):
+        with st.spinner("Đang lục tìm dữ liệu..."):
             all_data = load_all_sheets()
             handled = False
             norm_u = normalize_text(u_input)
+            month, year = extract_year_month(norm_u)
 
-            # --- LỚP 1: DỮ LIỆU CẤU TRÚC (TABLES) ---
-            # KPI
+            # --- LUỒNG 1: DỮ LIỆU KPI ---
             if any(k in norm_u for k in ["kpi", "chỉ số", "thực hiện"]):
-                df_kpi = all_data.get("KPI", pd.DataFrame())
-                if not df_kpi.empty:
-                    res = "Dạ, đây là thông tin KPI anh cần ạ:"
+                df = all_data.get("KPI", pd.DataFrame())
+                if not df.empty:
+                    # Logic lọc theo tháng/năm nếu có trong câu hỏi
+                    if month: df = df[df['Tháng'] == month]
+                    if year: df = df[df['Năm'] == year]
+                    
+                    res = f"Đây là dữ liệu KPI {f'tháng {month}' if month else ''} {f'năm {year}' if year else ''} ạ:"
                     st.markdown(res)
-                    st.dataframe(df_kpi)
-                    st.session_state.messages.append({"role": "assistant", "content": res, "df": df_kpi})
+                    st.dataframe(df)
+                    
+                    # Tự động vẽ biểu đồ nếu yêu cầu
+                    if "biểu đồ" in norm_u:
+                        fig, ax = plt.subplots(figsize=(10, 5))
+                        sns.barplot(data=df, x='Đơn vị', y='Tỷ lệ thực hiện', ax=ax)
+                        plt.xticks(rotation=45)
+                        st.pyplot(fig)
+                        st.session_state.messages.append({"role": "assistant", "content": res, "df": df, "fig": fig})
+                    else:
+                        st.session_state.messages.append({"role": "assistant", "content": res, "df": df})
                     handled = True
 
-            # CBCNV
-            if not handled and any(k in norm_u for k in ["cbcnv", "nhân viên", "nhân sự", "con người"]):
-                df_cb = all_data.get("CBCNV", pd.DataFrame())
-                if not df_cb.empty:
-                    res = f"Hiện đội mình đang có {len(df_cb)} CBCNV. Danh sách chi tiết đây ạ:"
+            # --- LUỒNG 2: CBCNV ---
+            elif any(k in norm_u for k in ["cbcnv", "nhân viên", "nhân sự"]):
+                df = all_data.get("CBCNV", pd.DataFrame())
+                if not df.empty:
+                    res = f"Đội hiện có {len(df)} CBCNV. Danh sách chi tiết:"
                     st.markdown(res)
-                    st.dataframe(df_cb)
-                    st.session_state.messages.append({"role": "assistant", "content": res, "df": df_cb})
+                    st.dataframe(df)
+                    
+                    if "biểu đồ" in norm_u:
+                        fig, ax = plt.subplots()
+                        df['Trình độ'].value_counts().plot(kind='pie', autopct='%1.1f%%', ax=ax)
+                        st.pyplot(fig)
+                        st.session_state.messages.append({"role": "assistant", "content": res, "df": df, "fig": fig})
+                    else:
+                        st.session_state.messages.append({"role": "assistant", "content": res, "df": df})
                     handled = True
 
-            # Lãnh đạo xã / Địa phương
-            if not handled and any(k in norm_u for k in ["lãnh đạo", "xã", "địa phương"]):
-                df_ld = all_data.get("Lãnh đạo xã", pd.DataFrame())
-                if not df_ld.empty:
-                    res = "Thông tin lãnh đạo địa phương anh cần đây ạ:"
-                    st.markdown(res)
-                    st.dataframe(df_ld)
-                    st.session_state.messages.append({"role": "assistant", "content": res, "df": df_ld})
+            # --- LUỒNG 3: LÃNH ĐẠO XÃ ---
+            elif any(k in norm_u for k in ["lãnh đạo", "xã", "địa phương"]):
+                df = all_data.get("Lãnh đạo xã", pd.DataFrame())
+                if not df.empty:
+                    # Lọc theo tên xã nếu có
+                    for x in df['Xã'].unique():
+                        if normalize_text(x) in norm_u:
+                            df = df[df['Xã'] == x]
+                            break
+                    st.markdown("Thông tin lãnh đạo địa phương:")
+                    st.dataframe(df)
+                    st.session_state.messages.append({"role": "assistant", "content": "Dữ liệu lãnh đạo xã ạ.", "df": df})
                     handled = True
 
-            # --- LỚP 2: HỎI ĐÁP THÔNG MINH (SEMANTIC SEARCH) ---
+            # --- LUỒNG 4: SỰ CỐ ---
+            elif any(k in norm_u for k in ["sự cố", "mất điện"]):
+                df = all_data.get("Sự cố", pd.DataFrame())
+                if not df.empty:
+                    if year: df = df[df['Năm'] == year]
+                    res = "Thống kê tình hình sự cố:"
+                    st.markdown(res)
+                    st.dataframe(df)
+                    st.session_state.messages.append({"role": "assistant", "content": res, "df": df})
+                    handled = True
+
+            # --- LUỒNG 5: HỎI ĐÁP THÔNG MINH ---
             if not handled:
-                ans, sc = semantic_search(u_input, all_data.get("Hỏi-Trả lời"), "Câu hỏi", "Câu trả lời")
-                if ans:
-                    st.markdown(ans)
-                    st.session_state.messages.append({"role": "assistant", "content": ans})
-                    handled = True
+                df_qa = all_data.get("Hỏi-Trả lời", pd.DataFrame())
+                if not df_qa.empty:
+                    qs = df_qa["Câu hỏi"].tolist()
+                    q_embs = ai_tools["semantic_model"].encode(qs, convert_to_tensor=True)
+                    u_emb = ai_tools["semantic_model"].encode(u_input, convert_to_tensor=True)
+                    hits = util.cos_sim(u_emb, q_embs)[0]
+                    best = torch.argmax(hits).item()
+                    if hits[best] > 0.4:
+                        ans = df_qa.iloc[best]["Câu trả lời"]
+                        st.markdown(ans)
+                        st.session_state.messages.append({"role": "assistant", "content": ans})
+                        handled = True
 
-            # --- LỚP 3: GOOGLE GEMINI (KIẾN THỨC NGOÀI) ---
+            # --- LUỒNG 6: GEMINI AI ---
             if not handled and secrets_data["gemini"]:
                 try:
                     genai.configure(api_key=secrets_data["gemini"])
                     model = genai.GenerativeModel('gemini-1.5-flash')
-                    
-                    # Tạo bối cảnh cho AI
-                    prompt_final = f"Bạn là trợ lý ảo Đội Định Hóa. Anh Long đang hỏi: '{u_input}'. Hãy trả lời thân thiện, chuyên nghiệp."
-                    response = model.generate_content(prompt_final)
-                    
+                    response = model.generate_content(f"Bạn là trợ lý Đội Định Hóa. Anh Long hỏi: {u_input}")
                     st.markdown(response.text)
                     st.session_state.messages.append({"role": "assistant", "content": response.text})
                     handled = True
-                except:
-                    st.warning("AI hiện đang bận, anh thử lại sau nhé!")
+                except: pass
 
-            # --- LỖI CUỐI CÙNG ---
             if not handled:
-                err_msg = "Em chưa tìm thấy thông tin này trong dữ liệu nội bộ và AI cũng không thể xác định. Anh hãy thử hỏi bằng cách khác nhé!"
-                st.info(err_msg)
-                st.session_state.messages.append({"role": "assistant", "content": err_msg})
+                err = "Em chưa thấy thông tin này trong dữ liệu ạ."
+                st.info(err)
+                st.session_state.messages.append({"role": "assistant", "content": err})
