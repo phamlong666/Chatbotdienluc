@@ -2,6 +2,7 @@ streamlit
 gspread
 google-auth
 google-auth-oauthlib
+openai
 pandas
 matplotlib
 seaborn
